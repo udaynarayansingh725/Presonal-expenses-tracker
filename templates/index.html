@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Expenses Tracker</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Personal Expenses Tracker</h1>
+
+        <section class="card">
+            <h2>Add Expense</h2>
+            <form id="add-form">
+                <input type="text" id="category" placeholder="Category (e.g. food)" required>
+                <input type="number" id="amount" placeholder="Amount (₹)" step="0.01" min="0.01" required>
+                <button type="submit">Add Expense</button>
+            </form>
+            <p id="add-msg" class="msg"></p>
+        </section>
+
+        <section class="card">
+            <h2>Search Expense</h2>
+            <form id="search-form">
+                <input type="text" id="search-category" placeholder="Category name" required>
+                <button type="submit">Search</button>
+            </form>
+            <p id="search-result" class="msg"></p>
+        </section>
+
+        <section class="card">
+            <h2>Monthly Report</h2>
+            <button id="report-btn">Show Report</button>
+            <div id="report"></div>
+        </section>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
