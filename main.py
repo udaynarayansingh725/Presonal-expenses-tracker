@@ -1,93 +1,113 @@
-import json
-import os
+const api = "/api";
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi import Request
-from pydantic import BaseModel
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+    }[char]));
+}
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_FILE = os.path.join(BASE_DIR, "expenses.json")
+function showMsg(el, text, ok) {
+    el.textContent = text;
+    el.className = "msg " + (ok ? "success" : "error");
+    setTimeout(() => {
+        el.textContent = "";
+        el.className = "msg";
+    }, 4000);
+}
 
-app = FastAPI(title="Personal Expenses Tracker")
+async function request(url, options) {
+    const res = await fetch(url, options);
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) throw new Error(data.detail || "Something went wrong");
+    return data;
+}
 
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+// ---------- Add Expense ----------
+document.getElementById("add-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById("add-msg");
+    const category = document.getElementById("category").value.trim();
+    const amount = Number(document.getElementById("amount").value);
 
+    if (!category) {
+        showMsg(msg, "Please enter a category", false);
+        return;
+    }
 
-class Expense(BaseModel):
-    category: str
-    amount: float
+    if (!Number.isFinite(amount) || amount <= 0) {
+        showMsg(msg, "Please enter a valid amount greater than 0", false);
+        return;
+    }
 
+    try {
+        await request(api + "/expenses", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ category, amount }),
+        });
+        showMsg(msg, `Expense added successfully: ${category} = ₹${amount.toFixed(2)}`, true);
+        e.target.reset();
+        loadReport();
+    } catch (err) {
+        showMsg(msg, err.message, false);
+    }
+});
 
-def load_expenses():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+// ---------- Search Expense ----------
+document.getElementById("search-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById("search-result");
+    const category = document.getElementById("search-category").value.trim().toLowerCase();
 
+    if (!category) {
+        showMsg(msg, "Please enter a category", false);
+        return;
+    }
 
-def save_expenses(expenses):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(expenses, f, indent=4)
+    try {
+        const data = await request(api + "/expenses/" + encodeURIComponent(category));
+        showMsg(msg, `Found: ${data.category} = ₹${Number(data.amount).toFixed(2)}`, true);
+    } catch (err) {
+        showMsg(msg, "Expense category not found!", false);
+    }
+});
 
+// ---------- Monthly Report ----------
+async function loadReport() {
+    const report = document.getElementById("report");
+    try {
+        const data = await request(api + "/report");
+        if (data.count === 0) {
+            report.innerHTML = "<p class='error'>No expenses found!</p>";
+            return;
+        }
 
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    return templates.TemplateResponse(request, "index.html")
+        const rows = Object.entries(data.expenses)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([cat, amount]) => `
+                <tr>
+                    <td>${escapeHtml(cat)}</td>
+                    <td>₹${Number(amount).toFixed(2)}</td>
+                </tr>
+            `)
+            .join("");
 
+        report.innerHTML = `
+            <table>
+                <thead><tr><th>Category</th><th>Amount</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+            <p class="total">Total Expenses: ₹${Number(data.total).toFixed(2)}</p>`;
+    } catch (err) {
+        report.innerHTML = "<p class='error'>Failed to load report</p>";
+    }
+}
 
-@app.get("/api/expenses")
-def get_all_expenses():
-    return load_expenses()
+document.getElementById("report-btn").addEventListener("click", loadReport);
 
-
-@app.post("/api/expenses")
-def add_expense(expense: Expense):
-    category = expense.category.strip().lower()
-    if not category:
-        raise HTTPException(status_code=400, detail="Category cannot be empty")
-    if expense.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
-
-    expenses = load_expenses()
-    expenses[category] = expenses.get(category, 0) + expense.amount
-    save_expenses(expenses)
-    return {"message": "Expense added successfully", "category": category, "amount": expenses[category]}
-
-
-@app.get("/api/expenses/{category}")
-def search_expense(category: str):
-    expenses = load_expenses()
-    key = category.strip().lower()
-    if key in expenses:
-        return {"category": key, "amount": expenses[key]}
-    raise HTTPException(status_code=404, detail="Expense category not found")
-
-
-@app.get("/api/report")
-def monthly_report():
-    expenses = load_expenses()
-    if not expenses:
-        return {"expenses": {}, "total": 0, "count": 0}
-    total = sum(expenses.values())
-    return {"expenses": expenses, "total": total, "count": len(expenses)}
-
-
-@app.delete("/api/expenses/{category}")
-def delete_expense(category: str):
-    expenses = load_expenses()
-    key = category.strip().lower()
-    if key not in expenses:
-        raise HTTPException(status_code=404, detail="Expense category not found")
-    del expenses[key]
-    save_expenses(expenses)
-    return {"message": f"Expense category '{key}' deleted"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+loadReport();

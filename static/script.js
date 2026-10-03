@@ -1,82 +1,122 @@
-const api = "/api";
+import json
+import math
+import os
 
-function showMsg(el, text, ok) {
-    el.textContent = text;
-    el.className = "msg " + (ok ? "success" : "error");
-    setTimeout(() => { el.textContent = ""; }, 4000);
-}
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
-async function request(url, options) {
-    const res = await fetch(url, options);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Something went wrong");
-    return data;
-}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, "expenses.json")
 
-// ---------- Add Expense ----------
-document.getElementById("add-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const msg = document.getElementById("add-msg");
-    const category = document.getElementById("category").value.trim();
-    const amount = parseFloat(document.getElementById("amount").value);
+app = FastAPI(title="Personal Expenses Tracker")
 
-    try {
-        await request(api + "/expenses", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ category, amount }),
-        });
-        showMsg(msg, `Expense added successfully: ${category} = ₹${amount}`, true);
-        e.target.reset();
-        loadReport();
-    } catch (err) {
-        showMsg(msg, err.message, false);
-    }
-});
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-// ---------- Search Expense ----------
-document.getElementById("search-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const msg = document.getElementById("search-result");
-    const category = document.getElementById("search-category").value.trim().toLowerCase();
 
-    if (!category) {
-        showMsg(msg, "Please enter a category", false);
-        return;
-    }
+class Expense(BaseModel):
+    category: str
+    amount: float
 
-    try {
-        const data = await request(api + "/expenses/" + encodeURIComponent(category));
-        showMsg(msg, `Found: ${data.category} = ₹${data.amount}`, true);
-    } catch (err) {
-        showMsg(msg, "Expense category not found!", false);
-    }
-});
 
-// ---------- Monthly Report ----------
-async function loadReport() {
-    const report = document.getElementById("report");
-    try {
-        const data = await request(api + "/report");
-        if (data.count === 0) {
-            report.innerHTML = "<p class='error'>No expenses found!</p>";
-            return;
-        }
-        let rows = "";
-        for (const [cat, amount] of Object.entries(data.expenses)) {
-            rows += `<tr><td>${cat}</td><td>₹${amount.toFixed(2)}</td></tr>`;
-        }
-        report.innerHTML = `
-            <table>
-                <thead><tr><th>Category</th><th>Amount</th></tr></thead>
-                <tbody>${rows}</tbody>
-            </table>
-            <p class="total">Total Expenses: ₹${data.total.toFixed(2)}</p>`;
-    } catch (err) {
-        report.innerHTML = "<p class='error'>Failed to load report</p>";
-    }
-}
+def normalize_category(category: str) -> str:
+    return category.strip().lower()
 
-document.getElementById("report-btn").addEventListener("click", loadReport);
 
-loadReport();
+def load_expenses():
+    if not os.path.exists(DATA_FILE):
+        return {}
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    normalized = {}
+    for raw_category, raw_amount in data.items():
+        category = normalize_category(str(raw_category))
+        if not category:
+            continue
+
+        try:
+            amount = float(raw_amount)
+        except (TypeError, ValueError):
+            continue
+
+        if math.isfinite(amount):
+            normalized[category] = amount
+
+    return normalized
+
+
+def save_expenses(expenses):
+    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(expenses, f, indent=4, sort_keys=True)
+
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    return templates.TemplateResponse(request, "index.html")
+
+
+@app.get("/api/expenses")
+def get_all_expenses():
+    return load_expenses()
+
+
+@app.post("/api/expenses")
+def add_expense(expense: Expense):
+    category = normalize_category(expense.category)
+    if not category:
+        raise HTTPException(status_code=400, detail="Category cannot be empty")
+
+    if not isinstance(expense.amount, (int, float)) or not math.isfinite(float(expense.amount)) or expense.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+
+    expenses = load_expenses()
+    expenses[category] = expenses.get(category, 0.0) + float(expense.amount)
+    save_expenses(expenses)
+    return {"message": "Expense added successfully", "category": category, "amount": expenses[category]}
+
+
+@app.get("/api/expenses/{category}")
+def search_expense(category: str):
+    expenses = load_expenses()
+    key = normalize_category(category)
+    if key in expenses:
+        return {"category": key, "amount": expenses[key]}
+    raise HTTPException(status_code=404, detail="Expense category not found")
+
+
+@app.get("/api/report")
+def monthly_report():
+    expenses = load_expenses()
+    if not expenses:
+        return {"expenses": {}, "total": 0.0, "count": 0}
+    total = sum(float(amount) for amount in expenses.values())
+    return {"expenses": expenses, "total": total, "count": len(expenses)}
+
+
+@app.delete("/api/expenses/{category}")
+def delete_expense(category: str):
+    expenses = load_expenses()
+    key = normalize_category(category)
+    if key not in expenses:
+        raise HTTPException(status_code=404, detail="Expense category not found")
+    del expenses[key]
+    save_expenses(expenses)
+    return {"message": f"Expense category '{key}' deleted"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
