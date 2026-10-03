@@ -110,7 +110,7 @@ def delete_expense(category: str):
     expenses = load_expenses()
     key = normalize_category(category)
     if key not in expenses:
-        raise HTTPException(status_code=404, detail="Expense category not found")
+        raise HTTPException(status_code=404, detail="Category not found")
     del expenses[key]
     save_expenses(expenses)
     return {"message": f"Expense category '{key}' deleted"}
